@@ -1,18 +1,82 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+)
 
+const WorkerTimeout = 10 * time.Second
+const MasterLoopInterval = 100 * time.Millisecond
+
+type TaskInfo struct {
+	State     TaskState
+	Worker    int
+	StartTime time.Time
+}
 
 type Master struct {
 	// Your definitions here.
-
+	mux        sync.Mutex
+	nReduce    int
+	filenames  []string
+	phase      Phase
+	taskInfos  []TaskInfo
+	taskChan   chan Task
+	numWorkers int
 }
 
 // Your code here -- RPC handlers for the worker to call.
+func (m *Master) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWorkerReply) error {
+	//log.Println("blocked, RegisterWorker")
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	reply.WorkerId = m.numWorkers
+	m.numWorkers += 1
+	return nil
+}
+
+func (m *Master) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	workerId := args.WorkerId
+	log.Printf("worker#%v calls GetTask", workerId)
+	var task Task
+	task = <-m.taskChan
+	// must not lock while waiting for channel
+	m.mux.Lock()
+	if m.phase != Terminated {
+		m.taskInfos[task.TaskNum].StartTime = time.Now()
+		m.taskInfos[task.TaskNum].Worker = workerId
+		m.taskInfos[task.TaskNum].State = InProgress
+	} else {
+		task = Task{Phase: Terminated}
+	}
+	m.mux.Unlock()
+	reply.Task = task
+	log.Printf("assigned task %v#%v to worker#%v", phaseName(m.phase), task.TaskNum, workerId)
+	return nil
+}
+
+func (m *Master) SubmitTask(args *SubmitTaskArgs, reply *SubmitTaskReply) error {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	task := args.Task
+	if args.Success {
+		if m.taskInfos[task.TaskNum].State == Completed {
+			log.Printf("task %v#%v is already completed, ignoring", phaseName(task.Phase), task.TaskNum)
+		} else {
+			m.taskInfos[task.TaskNum].State = Completed
+			log.Printf("task %v#%v complete", phaseName(task.Phase), task.TaskNum)
+		}
+	} else {
+		m.taskInfos[task.TaskNum].State = Idle
+		log.Printf("task %v#%v failed, rescheduling", phaseName(task.Phase), task.TaskNum)
+	}
+	return nil
+}
 
 //
 // an example RPC handler.
@@ -23,7 +87,6 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
-
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -46,12 +109,96 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
 	// Your code here.
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	return m.phase == Terminated
+}
 
+//
+// main loop
+//
+func (m *Master) loop() {
+	m.startMapPhase()
+	for !m.updateTaskStates() {
+		time.Sleep(MasterLoopInterval)
+	}
+	log.Println("map phase complete")
+	m.startReducePhase()
+	for !m.updateTaskStates() {
+		time.Sleep(MasterLoopInterval)
+	}
+	log.Println("reduce phase complete")
+	m.mux.Lock()
+	m.phase = Terminated
+	m.mux.Unlock()
+	log.Println("all tasks finished, shutting down...")
+}
 
-	return ret
+func (m *Master) updateTaskStates() bool {
+	//log.Println("blocked, updateTaskStates")
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	// go through all tasks, update their states
+	// returns true if all tasks are completed
+	allTasksCompleted := true
+	for idx, info := range m.taskInfos {
+		if info.State != Completed {
+			allTasksCompleted = false
+		}
+		switch info.State {
+		case Idle:
+			log.Printf("task %v#%v idle, queueing", phaseName(m.phase), idx)
+			m.taskChan <- m.makeTask(idx)
+			m.taskInfos[idx].State = Queued
+		case Queued:
+			//log.Printf("task %v#%v waiting in queue", phaseName(m.phase), idx)
+		case InProgress:
+			if time.Now().Sub(info.StartTime) > WorkerTimeout {
+				log.Printf("task %v#%v timed out, reset as idle", phaseName(m.phase), idx)
+				m.taskInfos[idx].State = Idle
+			}
+		case Completed:
+		default:
+			log.Fatalf("unexpected task state: %v", info.State)
+		}
+	}
+	return allTasksCompleted
+}
+
+func (m *Master) makeTask(taskNum int) Task {
+	task := Task{
+		TaskNum: taskNum,
+		Phase:   m.phase,
+		NMap:    len(m.filenames),
+		NReduce: m.nReduce,
+	}
+	switch m.phase {
+	case Map:
+		task.Filename = m.filenames[taskNum]
+	case Reduce:
+	default:
+		log.Fatalf("illegal master phase: %v", phaseName(m.phase))
+	}
+	return task
+}
+
+func (m *Master) startMapPhase() {
+	//log.Println("blocked, startMapPhase")
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	log.Println("master starting map phase")
+	m.phase = Map
+	m.taskInfos = make([]TaskInfo, len(m.filenames))
+}
+
+func (m *Master) startReducePhase() {
+	//log.Println("blocked, startReducePhase")
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	log.Println("master starting reduce phase")
+	m.phase = Reduce
+	m.taskInfos = make([]TaskInfo, m.nReduce)
 }
 
 //
@@ -63,7 +210,18 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	// Your code here.
-
+	m.mux = sync.Mutex{}
+	m.nReduce = nReduce
+	m.filenames = files
+	// channel needs to be created before go routine executes
+	var chanBufferSize int
+	if len(m.filenames) > m.nReduce {
+		chanBufferSize = len(m.filenames)
+	} else {
+		chanBufferSize = m.nReduce
+	}
+	m.taskChan = make(chan Task, chanBufferSize)
+	go m.loop()
 
 	m.server()
 	return &m
