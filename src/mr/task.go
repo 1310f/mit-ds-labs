@@ -2,22 +2,22 @@ package mr
 
 import "fmt"
 
+type Phase int
+
 const (
-	Map = iota
+	Map Phase = iota
 	Reduce
 	Terminated
 )
 
-type Phase int
+type TaskState int
 
 const (
-	Idle = iota
+	Idle TaskState = iota
 	Queued
 	InProgress
 	Completed
 )
-
-type TaskState int
 
 type Task struct {
 	TaskNum   int
