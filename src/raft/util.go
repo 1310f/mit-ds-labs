@@ -38,7 +38,7 @@ func (rf *Raft) logDebug(format string, a ...interface{}) {
 }
 
 func (rf *Raft) prependLogTag(level string, format string) string {
-	tag := fmt.Sprintf("[s%v @ %v%v] [%v] ",
+	tag := fmt.Sprintf("[s%v @ %3d%v] [%7s] ",
 		rf.me, rf.currentTerm, shortStateName(rf.state), level)
 	return tag + format
 }
