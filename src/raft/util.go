@@ -3,6 +3,8 @@ package raft
 import (
 	"fmt"
 	"log"
+	"math/rand"
+	"time"
 )
 
 // Debugging
@@ -71,4 +73,9 @@ func shortStateName(state State) string {
 	default:
 		return "?"
 	}
+}
+
+func (rf *Raft) randomElectionTimeout() time.Duration {
+	sleepTimeInMs := rand.Intn(ElectionTimeoutMsMax-ElectionTimeoutMsMin) + ElectionTimeoutMsMin
+	return time.Duration(sleepTimeInMs) * time.Millisecond
 }
