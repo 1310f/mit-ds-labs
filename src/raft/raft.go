@@ -1,7 +1,9 @@
 package raft
 
 import (
+	"../labgob"
 	"../labrpc"
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,9 +25,6 @@ import (
 //   should send an ApplyMsg to the service (or tester)
 //   in the same server.
 //
-
-// import "bytes"
-// import "../labgob"
 
 type State int
 
@@ -134,6 +133,15 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	// expects lock to be held
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	_ = e.Encode(rf.currentTerm)
+	_ = e.Encode(rf.votedFor)
+	_ = e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -156,6 +164,21 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	rf.mu.Lock()
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
+		rf.logFatal("failed to read persisted state")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) changeState(newState State) {
@@ -165,39 +188,26 @@ func (rf *Raft) changeState(newState State) {
 	switch newState {
 	case Follower:
 		if rf.state != newState {
-			rf.logDebug("starting election timer")
+			//rf.logDebug("starting election timer")
 			go rf.electionTimer()
 		}
 		rf.state = newState
 	case Candidate:
 		// set state in beginElection instead
 		// begin election
-		rf.logDebug("starting election")
+		//rf.logDebug("starting election")
 		go rf.beginElection()
 	case Leader:
 		// set up heartbeat loop
 		if rf.state != newState {
-			rf.logDebug("initializing leader states")
 			rf.initLeaderStates()
-			rf.logDebug("starting heartbeat timer")
+			//rf.logDebug("starting heartbeat timer")
 			go rf.sendAppendEntriesTimer()
 		}
 		rf.state = newState
-		// TODO: re-init volatile states for leader
 	default:
 		rf.logFatal("unexpected new state type: %v", stateName(newState))
 	}
-}
-
-func (rf *Raft) initLeaderStates() {
-	// expect the lock to be held
-	lastLogIndex := rf.lastLogIndex()
-	rf.nextIndex = make([]int, len(rf.peers))
-	for idx := range rf.nextIndex {
-		rf.nextIndex[idx] = lastLogIndex + 1
-	}
-	rf.matchIndex = make([]int, len(rf.peers))
-	rf.matchIndex[rf.me] = lastLogIndex
 }
 
 func (rf *Raft) applyEntries() {
@@ -218,7 +228,7 @@ func (rf *Raft) applyEntries() {
 			Command:      entry.Command,
 			CommandIndex: rf.lastApplied,
 		}
-		//rf.logInfo("applying %+v", entry)
+		rf.logInfo("applying %v: %+v", rf.lastApplied, entry)
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 	}
@@ -257,6 +267,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		rf.logInfo("adding new entry to log at index %v: %+v", index, newEntry)
 		rf.log = append(rf.log, newEntry)
+		rf.persist()
 		oldMatchIndex := rf.matchIndex[rf.me]
 		oldNextIndex := rf.nextIndex[rf.me]
 		rf.matchIndex[rf.me] = index
@@ -321,13 +332,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
 	// init
 	rf.mu.Lock()
 	rf.changeState(Follower)
 	rf.mu.Unlock()
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
 
 	return rf
 }

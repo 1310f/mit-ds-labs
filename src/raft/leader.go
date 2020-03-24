@@ -47,6 +47,7 @@ func (rf *Raft) sendAppendEntriesTimer() {
 						rf.changeState(Follower)
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
+						rf.persist()
 						rf.mu.Unlock()
 						return
 					}
@@ -131,18 +132,18 @@ func (rf *Raft) advanceLeaderCommitIndex() {
 		rf.logFatal("trying to advance commitIndex as non-leader")
 	}
 	newCommitIndex := rf.commitIndex
-	for newCommitIndex < rf.lastLogIndex() {
-		nextCommitIndex := newCommitIndex + 1
+	for i := rf.commitIndex + 1; i <= rf.lastLogIndex(); i++ {
 		matched := 0
 		for server := range rf.peers {
-			if rf.matchIndex[server] >= nextCommitIndex {
+			if rf.matchIndex[server] >= i {
 				matched++
 			}
 		}
-		if matched*2 > len(rf.peers) {
-			newCommitIndex = nextCommitIndex
-		} else {
+		if matched*2 <= len(rf.peers) {
 			break
+		}
+		if rf.log[i].Term == rf.currentTerm {
+			newCommitIndex = i
 		}
 	}
 	if rf.commitIndex != newCommitIndex {
@@ -150,4 +151,15 @@ func (rf *Raft) advanceLeaderCommitIndex() {
 	}
 	rf.commitIndex = newCommitIndex
 	go rf.applyEntries()
+}
+
+func (rf *Raft) initLeaderStates() {
+	// expect the lock to be held
+	lastLogIndex := rf.lastLogIndex()
+	rf.nextIndex = make([]int, len(rf.peers))
+	for idx := range rf.nextIndex {
+		rf.nextIndex[idx] = lastLogIndex + 1
+	}
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.matchIndex[rf.me] = lastLogIndex
 }

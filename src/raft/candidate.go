@@ -10,44 +10,60 @@ func (rf *Raft) beginElection() {
 
 	voteCh := make(chan bool, len(rf.peers)-1)
 
-	args := RequestVoteArgs{
-		Term:         rf.currentTerm,
-		CandidateId:  rf.me,
-		LastLogIndex: rf.lastLogIndex(),
-		LastLogTerm:  rf.lastLogTerm(),
-	}
 	for server := range rf.peers {
 		if server == rf.me {
 			continue
 		}
-		go func(server int) {
-			// should avoid using any shared resource in goroutine
-			reply := RequestVoteReply{}
-			ok := rf.sendRequestVote(server, &args, &reply)
-			if !ok {
-				rf.mu.Lock()
-				rf.logDebug("failed to send RequestVote to s%v", server)
+		go func(server int, term int) {
+			rf.mu.Lock()
+			if rf.currentTerm > term {
+				// term has expired, no longer candidate
 				rf.mu.Unlock()
+				return
+			}
+			args := RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateId:  rf.me,
+				LastLogIndex: rf.lastLogIndex(),
+				LastLogTerm:  rf.lastLogTerm(),
+			}
+			reply := RequestVoteReply{}
+			rf.mu.Unlock()
+
+			// blocking
+			ok := rf.sendRequestVote(server, &args, &reply)
+
+			rf.mu.Lock()
+			if !ok {
+				//rf.logDebug("failed to send RequestVote to s%v", server)
+				rf.mu.Unlock()
+				// blocking
 				voteCh <- false
 				return
 			}
-			rf.mu.Lock()
+			if rf.currentTerm > term {
+				// term has expired, no longer candidate
+				rf.mu.Unlock()
+				return
+			}
 			defer rf.mu.Unlock()
-			rf.logDebug("sent RequestVote to s%v", server)
+			//rf.logDebug("sent RequestVote to s%v", server)
 			if reply.Term != rf.currentTerm || rf.state != Candidate {
-				rf.logDebug("received expired vote from term %v, ignoring", reply.Term)
+				//rf.logDebug("received expired vote from term %v, ignoring", reply.Term)
 				return
 			}
 			if reply.Term > args.Term {
 				// someone has higher term than us, abort and become follower
-				rf.logDebug("received NO vote with higher term %v,"+
-					"aborting and converting to Follower", reply.Term)
+				//rf.logDebug("received NO vote with higher term %v, "+
+				//	"aborting and converting to Follower", reply.Term)
 				rf.currentTerm = reply.Term
+				rf.votedFor = -1
+				rf.persist()
 				rf.changeState(Follower)
 				return
 			}
 			voteCh <- reply.VoteGranted
-		}(server)
+		}(server, rf.currentTerm)
 	}
 	rf.mu.Unlock()
 
@@ -55,7 +71,7 @@ func (rf *Raft) beginElection() {
 	voteCount := 1
 	grantCount := 1
 	rf.mu.Lock()
-	rf.logDebug("waiting for votes to come in...")
+	//rf.logDebug("waiting for votes to come in...")
 	rf.mu.Unlock()
 	for {
 		// when all peers have voted, or grant/deny votes have reached 1/2, stop waiting for votes
@@ -63,14 +79,14 @@ func (rf *Raft) beginElection() {
 			grantCount*2 > len(rf.peers) ||
 			(voteCount-grantCount)*2 > len(rf.peers) {
 			rf.mu.Lock()
-			rf.logDebug("collected enough votes")
+			//rf.logDebug("collected enough votes")
 			rf.mu.Unlock()
 			break
 		}
 		// otherwise wait for more votes to come in
 
 		startTime := time.Now()
-		timeout := rf.randomElectionTimeout()
+		timeout := randomElectionTimeout()
 		select {
 		case grant := <-voteCh:
 			voteCount++
@@ -78,10 +94,10 @@ func (rf *Raft) beginElection() {
 				grantCount++
 			}
 		case <-time.After(timeout):
-			elapsed := time.Now().Sub(startTime)
+			//elapsed := time.Now().Sub(startTime)
 			if time.Now().Sub(startTime) > timeout {
 				rf.mu.Lock()
-				rf.logDebug("election timeout (%vms), starting new election", elapsed.Milliseconds())
+				//rf.logDebug("election timeout (%vms), starting new election", elapsed.Milliseconds())
 				rf.changeState(Candidate)
 				rf.mu.Unlock()
 			}

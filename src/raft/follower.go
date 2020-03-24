@@ -4,7 +4,7 @@ import "time"
 
 func (rf *Raft) electionTimer() {
 	for {
-		timeoutDuration := rf.randomElectionTimeout()
+		timeoutDuration := randomElectionTimeout()
 		time.Sleep(timeoutDuration)
 		rf.mu.Lock()
 		// if no longer follower, cancel timer

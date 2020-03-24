@@ -714,7 +714,7 @@ func TestPersist32C(t *testing.T) {
 // iteration asks a leader, if there is one, to insert a command in the Raft
 // log.  If there is a leader, that leader will fail quickly with a high
 // probability (perhaps without committing the command), or crash after a while
-// with low probability (most likey committing the command).  If the number of
+// with low probability (most likely committing the command).  If the number of
 // alive servers isn't enough to form a majority, perhaps start a new server.
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
@@ -740,12 +740,22 @@ func TestFigure82C(t *testing.T) {
 			}
 		}
 
+		if leader != -1 {
+			log.Printf("========== ITER %v ==========", iters)
+		}
+
 		if (rand.Int() % 1000) < 100 {
 			ms := rand.Int63() % (int64(RaftElectionTimeout/time.Millisecond) / 2)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
+			if leader != -1 {
+				log.Printf("====== LEADER s%v CRASH AFTER A WHILE (%vms) ======", leader, ms)
+			}
 		} else {
 			ms := (rand.Int63() % 13)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
+			if leader != -1 {
+				log.Printf("====== LEADER s%v CRASH QUICKLY (%vms) ======", leader, ms)
+			}
 		}
 
 		if leader != -1 {
@@ -756,6 +766,7 @@ func TestFigure82C(t *testing.T) {
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.rafts[s] == nil {
+				log.Printf("====== RESTART s%v ======", s)
 				cfg.start1(s)
 				cfg.connect(s)
 				nup += 1
@@ -763,6 +774,7 @@ func TestFigure82C(t *testing.T) {
 		}
 	}
 
+	log.Printf("====== RESTART ALL ======")
 	for i := 0; i < servers; i++ {
 		if cfg.rafts[i] == nil {
 			cfg.start1(i)
@@ -816,6 +828,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
 		if iters == 200 {
+			log.Printf("====== LONG REORDERING SET TO TRUE ======")
 			cfg.setlongreordering(true)
 		}
 		leader := -1
