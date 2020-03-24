@@ -234,7 +234,7 @@ func (rf *Raft) applyEntries() {
 	}
 	rf.mu.Lock()
 	if rf.lastApplied > oldLastApplied {
-		rf.logInfo("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
+		rf.logDebug("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
 	}
 	rf.mu.Unlock()
 }
