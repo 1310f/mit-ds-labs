@@ -183,7 +183,7 @@ func (rf *Raft) readPersist(data []byte) {
 
 func (rf *Raft) changeState(newState State) {
 	// expects lock to be held
-	rf.logDebug("%v -> %v", stateName(rf.state), stateName(newState))
+	rf.logInfo("%v -> %v", stateName(rf.state), stateName(newState))
 
 	switch newState {
 	case Follower:

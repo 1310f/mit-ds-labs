@@ -2,13 +2,15 @@ package kvraft
 
 import (
 	"../labrpc"
+	"crypto/rand"
 	"fmt"
 	"log"
+	"math/big"
 	mrand "math/rand"
 	"time"
 )
-import "crypto/rand"
-import "math/big"
+
+const ClientRetryTimeout = 50 * time.Millisecond
 
 var currentClientId ClientId = 0
 
@@ -57,26 +59,30 @@ func (ck *Clerk) Get(key string) string {
 		Key:      key,
 		ClientId: ck.clientId,
 		SeqNum:   ck.seqNum,
+		RetryNum: 1,
 	}
 	for {
 		reply := GetReply{}
 		ok := ck.servers[ck.leader].Call("KVServer.Get", &args, &reply)
 		if !ok {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
+			time.Sleep(ClientRetryTimeout)
+			args.RetryNum++
 			continue
 		}
 		switch reply.Err {
 		case OK:
-			ck.logInfo("Op#%v Get(%v) OK: %v", args.SeqNum, args.Key, reply.Value)
+			ck.logInfo("op%v.%v Get(%v) OK: %v", ck.clientId, args.SeqNum, args.Key, reply.Value)
 			return reply.Value
 		case ErrNoKey:
-			ck.logInfo("Op#%v Get(%v) ErrNoKey", args.SeqNum, args.Key)
+			ck.logInfo("op%v.%v Get(%v) ErrNoKey", ck.clientId, args.SeqNum, args.Key)
 			return ""
 		case ErrWrongLeader:
 			fallthrough
 		default:
 			ck.leader = (ck.leader + 1) % len(ck.servers)
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(ClientRetryTimeout)
+			args.RetryNum++
 			continue
 		}
 	}
@@ -101,25 +107,33 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		Op:       op,
 		ClientId: ck.clientId,
 		SeqNum:   ck.seqNum,
+		RetryNum: 1,
 	}
 	for {
 		reply := PutAppendReply{}
 		ok := ck.servers[ck.leader].Call("KVServer.PutAppend", &args, &reply)
 		if !ok {
-			ck.logInfo("failed to reach server")
 			ck.leader = (ck.leader + 1) % len(ck.servers)
+			time.Sleep(ClientRetryTimeout)
+			args.RetryNum++
 			continue
 		}
 		switch reply.Err {
 		case OK:
-			ck.logInfo("Op#%v PutAppend(%v, %v, %v) OK",
-				args.SeqNum, args.Key, args.Value, args.Op)
+			ck.logInfo("op%v.%v %v(%v, %v) OK",
+				ck.clientId, args.SeqNum, args.Op, args.Key, args.Value)
+			return
+		case ErrNoKey:
+			// FIXME: (?) should this happen for append?
+			ck.logInfo("op%v.%v %v(%v, %v) ErrNoKey",
+				ck.clientId, args.SeqNum, args.Op, args.Key, args.Value)
 			return
 		case ErrWrongLeader:
 			fallthrough
 		default:
 			ck.leader = (ck.leader + 1) % len(ck.servers)
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(ClientRetryTimeout)
+			args.RetryNum++
 			continue
 		}
 	}
@@ -131,6 +145,8 @@ func (ck *Clerk) Put(key string, value string) {
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
 }
+
+//region Logging utils
 
 func (ck *Clerk) logInfo(format string, a ...interface{}) {
 	newFormat := ck.prependLogTag("INFO", format)
@@ -155,7 +171,9 @@ func (ck *Clerk) logDebug(format string, a ...interface{}) {
 }
 
 func (ck *Clerk) prependLogTag(level string, format string) string {
-	tag := fmt.Sprintf("[%7s] [c%v] [%v] ",
-		level, ck.clientId, ck.leader)
+	tag := fmt.Sprintf("[%7s] [c%v] ",
+		level, ck.clientId)
 	return tag + format
 }
+
+//endregion

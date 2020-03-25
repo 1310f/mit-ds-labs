@@ -8,9 +8,12 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const Debug = 1
+
+const RaftTimeout = 1 * time.Second
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -23,16 +26,26 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	ClientId ClientId
-	SeqNum   int
-	Method   string
-	Key      string
-	Value    string
+	RequestId RequestId
+	Method    string
+	Key       string
+	Value     string
 }
 
 type Result struct {
 	Err   Err
 	Value string
+}
+
+type CommandId struct {
+	ClientId ClientId
+	SeqNum   int
+}
+
+type RequestId struct {
+	ClientId ClientId
+	SeqNum   int
+	RetryNum int
 }
 
 type KVServer struct {
@@ -46,83 +59,166 @@ type KVServer struct {
 
 	// Your definitions here.
 	data     map[string]string
-	resultCh map[ClientId]chan Result
+	lastSeen map[ClientId]int
+	//resultCh map[ClientId]chan Result
+	resultCh map[RequestId]chan Result
+
+	// used to return failures
+	clientLogIndex map[RequestId]int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	op := Op{
+	requestId := RequestId{
 		ClientId: args.ClientId,
 		SeqNum:   args.SeqNum,
-		Method:   "Get",
-		Key:      args.Key,
-		Value:    "",
+		RetryNum: args.RetryNum,
 	}
-	_, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
+	op := Op{
+		RequestId: requestId,
+		Method:    "Get",
+		Key:       args.Key,
+		Value:     "",
 	}
-	kv.logInfo("received from c%v op%v: Get(%v)", args.ClientId, args.SeqNum, args.Key)
-	kv.logDebug("c%v op%v sent to raft", op.ClientId, op.SeqNum)
-	kv.resultCh[args.ClientId] = make(chan Result)
-	result := <-kv.resultCh[args.ClientId]
+	result := kv.sendToRaft(op)
 	reply.Err = result.Err
 	reply.Value = result.Value
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	op := Op{
+	requestId := RequestId{
 		ClientId: args.ClientId,
 		SeqNum:   args.SeqNum,
-		Method:   args.Op,
-		Key:      args.Key,
-		Value:    args.Value,
+		RetryNum: args.RetryNum,
 	}
-	_, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
+	op := Op{
+		RequestId: requestId,
+		Method:    args.Op,
+		Key:       args.Key,
+		Value:     args.Value,
 	}
-	kv.logInfo("received from c%v op%v: PutAppend(%v, %v, %v)",
-		args.ClientId, args.SeqNum, args.Key, args.Value, args.Op)
-	kv.logDebug("c%v op%v sent to raft", op.ClientId, op.SeqNum)
-	kv.resultCh[args.ClientId] = make(chan Result)
-	result := <-kv.resultCh[args.ClientId]
+	result := kv.sendToRaft(op)
 	reply.Err = result.Err
+}
+
+func (kv *KVServer) sendToRaft(op Op) Result {
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		kv.logDebug("received %v, not leader, rejecting", op.String())
+		return Result{
+			Err: ErrWrongLeader,
+		}
+	}
+	kv.mu.Lock()
+	kv.logInfo("received %v, creating result channel", op.String())
+	kv.resultCh[op.RequestId] = make(chan Result)
+	kv.clientLogIndex[op.RequestId] = index
+	resultCh := kv.resultCh[op.RequestId]
+	kv.mu.Unlock()
+	select {
+	case result := <-resultCh:
+		kv.mu.Lock()
+		kv.logDebug("%v finished, deleting channel", op.RequestId.String())
+		delete(kv.resultCh, op.RequestId)
+		kv.mu.Unlock()
+		return result
+	case <-time.After(RaftTimeout):
+		kv.mu.Lock()
+		kv.logWarning("%v timed out, deleting channel", op.RequestId.String())
+		delete(kv.resultCh, op.RequestId)
+		kv.mu.Unlock()
+		return Result{Err: ErrTimeout}
+	}
 }
 
 func (kv *KVServer) applyLoop() {
 	for {
+		if kv.killed() {
+			kv.mu.Lock()
+			kv.logInfo("killed")
+			kv.mu.Unlock()
+			return
+		}
+		// FIXME: BLOCKED???
+		//kv.logWarning("--- waiting on applyCh")
 		applyMsg := <-kv.applyCh
+		//kv.logWarning("--- received from applyCh")
 		if applyMsg.CommandValid {
+			kv.mu.Lock()
 			op := applyMsg.Command.(Op)
-			kv.logDebug("c%v op%v passed raft", op.ClientId, op.SeqNum)
-			switch op.Method {
-			case "Get":
-				v := kv.data[op.Key]
-				kv.resultCh[op.ClientId] <- Result{
-					Err:   OK,
-					Value: v,
-				}
-			case "Put":
-				kv.data[op.Key] = op.Value
-				v := kv.data[op.Key]
-				kv.resultCh[op.ClientId] <- Result{
-					Err:   OK,
-					Value: v,
-				}
-			case "Append":
-				kv.data[op.Key] += op.Value
-				v := kv.data[op.Key]
-				kv.resultCh[op.ClientId] <- Result{
-					Err:   OK,
-					Value: v,
-				}
-			default:
-				kv.logFatal("trying to apply unknown op: %v", op.Method)
+			kv.logDebug("%v passed raft", op.RequestId.String())
+			clientId := op.RequestId.ClientId
+			seqNum := op.RequestId.SeqNum
+			commandId := CommandId{
+				ClientId: clientId,
+				SeqNum:   seqNum,
 			}
+			if kv.lastSeen[clientId] >= seqNum {
+				kv.logDebug("%v already executed, skipping", commandId.String())
+			} else {
+				switch op.Method {
+				case "Get":
+				case "Put":
+					kv.data[op.Key] = op.Value
+				case "Append":
+					kv.data[op.Key] += op.Value
+				default:
+					kv.logFatal("trying to apply unknown op: %v", op.Method)
+				}
+				kv.logDebug("%v executed for the first time", commandId.String())
+				kv.lastSeen[clientId] = seqNum
+			}
+
+			if resultCh, ok := kv.resultCh[op.RequestId]; ok {
+				v := kv.data[op.Key]
+				result := Result{
+					Err:   OK,
+					Value: v,
+				}
+				kv.logDebug("%v done, returning result through channel", op.RequestId.String())
+				kv.mu.Unlock()
+				// FIXME: this could block if no one's receiving on the other side
+				resultCh <- result
+			} else {
+				kv.mu.Unlock()
+			}
+
+			kv.mu.Lock()
+			var reqFailed []RequestId
+			for req, index := range kv.clientLogIndex {
+				if index == applyMsg.CommandIndex && req != op.RequestId {
+					reqFailed = append(reqFailed, req)
+				}
+			}
+			kv.mu.Unlock()
+
+			for _, request := range reqFailed {
+				kv.mu.Lock()
+				if resultCh, ok := kv.resultCh[request]; ok {
+					kv.logDebug("%v failed in raft", op.RequestId.String())
+					result := Result{
+						Err: ErrWrongLeader,
+					}
+					kv.mu.Unlock()
+					resultCh <- result
+				} else {
+					kv.mu.Unlock()
+				}
+			}
+
+			//if resultCh, ok := kv.resultCh[op.ClientId]; ok {
+			//	v := kv.data[op.Key]
+			//	result := Result{
+			//		Err:   OK,
+			//		Value: v,
+			//	}
+			//	kv.mu.Unlock()
+			//	resultCh <- result
+			//} else {
+			//	kv.mu.Unlock()
+			//}
+
 		}
 	}
 }
@@ -173,7 +269,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.data = make(map[string]string)
-	kv.resultCh = make(map[ClientId]chan Result)
+	kv.lastSeen = make(map[ClientId]int)
+	kv.clientLogIndex = make(map[RequestId]int)
+	//kv.resultCh = make(map[ClientId]chan Result)
+	kv.resultCh = make(map[RequestId]chan Result)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
@@ -209,8 +308,33 @@ func (kv *KVServer) logDebug(format string, a ...interface{}) {
 }
 
 func (kv *KVServer) prependLogTag(level string, format string) string {
-	tag := fmt.Sprintf("[%7s] [k%v] ", level, kv.me)
+	tag := fmt.Sprintf("[%7s] [k%v] %v ", level, kv.me, kv.rf.GetTermStateTag())
 	return tag + format
+}
+
+func (op *Op) String() string {
+	return op.RequestId.String() + " " + op.CommandString()
+}
+
+func (rid *RequestId) String() string {
+	return fmt.Sprintf("op%v.%v#%v", rid.ClientId, rid.SeqNum, rid.RetryNum)
+}
+
+func (cid *CommandId) String() string {
+	return fmt.Sprintf("op%v.%v", cid.ClientId, cid.SeqNum)
+}
+
+func (op *Op) CommandString() string {
+	switch op.Method {
+	case "Get":
+		return fmt.Sprintf("Get(%v)", op.Key)
+	case "Put":
+		fallthrough
+	case "Append":
+		return fmt.Sprintf("%v(%v, %v)", op.Method, op.Key, op.Value)
+	default:
+		return "Unknown"
+	}
 }
 
 //endregion

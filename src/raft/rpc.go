@@ -106,10 +106,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
-	rf.logDebug("receives AppendEntries with term %v from s%v: "+
-		"Entries: %v, prevLogIndex: %v, prevLogTerm: %v, LeaderCommit: %v",
-		args.Term, args.LeaderId, shortLog(args.Entries, false),
-		args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
+	//rf.logDebug("receives AppendEntries with term %v from s%v: "+
+	//	"Entries: %v, prevLogIndex: %v, prevLogTerm: %v, LeaderCommit: %v",
+	//	args.Term, args.LeaderId, shortLog(args.Entries, false),
+	//	args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
 	// 1. reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
@@ -123,7 +123,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		rf.logDebug("prev log term mismatch at index %v, rejecting AppendEntries", args.PrevLogIndex)
+		//rf.logDebug("prev log term mismatch at index %v, rejecting AppendEntries", args.PrevLogIndex)
 		reply.Success = false
 		// from Students' Guide to Raft:
 		if args.PrevLogIndex >= len(rf.log) {
@@ -145,7 +145,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			reply.ConflictIndex = conflictIndex
 		}
-		rf.logDebug("conflictIndex = %v, conflictTerm = %v", reply.ConflictIndex, reply.ConflictTerm)
+		//rf.logDebug("conflictIndex = %v, conflictTerm = %v", reply.ConflictIndex, reply.ConflictTerm)
 		return
 	}
 
@@ -162,8 +162,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			break
 		}
 		if entry.Term != rf.log[logIndex].Term {
-			rf.logDebug("log entry mismatch at index %v", logIndex)
-			rf.logDebug("removing log entries starting from %v", logIndex)
+			//rf.logDebug("log entry mismatch at index %v", logIndex)
+			//rf.logDebug("removing log entries starting from %v", logIndex)
 			rf.log = rf.log[:logIndex]
 			break
 		}
@@ -185,17 +185,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.persist()
 
-	rf.logDebug("updated log: %v", shortLog(rf.log, true))
+	//rf.logDebug("updated log: %v", shortLog(rf.log, true))
 
 	// 5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
-		oldCommitIndex := rf.commitIndex
+		//oldCommitIndex := rf.commitIndex
 		if args.LeaderCommit < lastNewEntryIndex {
 			rf.commitIndex = args.LeaderCommit
 		} else {
 			rf.commitIndex = lastNewEntryIndex
 		}
-		rf.logDebug("commitIndex[%v] %v -> %v", rf.me, oldCommitIndex, rf.commitIndex)
+		//rf.logDebug("commitIndex[%v] %v -> %v", rf.me, oldCommitIndex, rf.commitIndex)
 		go rf.applyEntries()
 	}
 

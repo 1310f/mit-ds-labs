@@ -42,8 +42,8 @@ func (rf *Raft) sendAppendEntriesTimer() {
 						return
 					}
 					if reply.Term > rf.currentTerm {
-						rf.logDebug("received AppendEntries reply with higher term %v, "+
-							"converting to follower and aborting", reply.Term)
+						//rf.logDebug("received AppendEntries reply with higher term %v, "+
+						//	"converting to follower and aborting", reply.Term)
 						rf.changeState(Follower)
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
@@ -54,14 +54,14 @@ func (rf *Raft) sendAppendEntriesTimer() {
 					if reply.Success {
 						// update nextIndex and matchIndex for follower
 						//rf.logDebug("AppendEntries to s%v successful", server)
-						oldMatchIndex := rf.matchIndex[server]
-						oldNextIndex := rf.nextIndex[server]
+						//oldMatchIndex := rf.matchIndex[server]
+						//oldNextIndex := rf.nextIndex[server]
 						rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
 						rf.nextIndex[server] = rf.matchIndex[server] + 1
-						if len(args.Entries) > 0 {
-							rf.logDebug("matchIndex[%v] %v -> %v", server, oldMatchIndex, rf.matchIndex[server])
-							rf.logDebug("nextIndex[%v] %v -> %v", server, oldNextIndex, rf.nextIndex[server])
-						}
+						//if len(args.Entries) > 0 {
+						//	rf.logDebug("matchIndex[%v] %v -> %v", server, oldMatchIndex, rf.matchIndex[server])
+						//	rf.logDebug("nextIndex[%v] %v -> %v", server, oldNextIndex, rf.nextIndex[server])
+						//}
 						rf.advanceLeaderCommitIndex()
 						rf.mu.Unlock()
 						return
@@ -88,8 +88,8 @@ func (rf *Raft) sendAppendEntriesTimer() {
 					// if AppendEntries fails because of log inconsistency,
 					// decrement nextIndex and retry (§5.3)
 					rf.nextIndex[server] = newNextIndex
-					rf.logDebug("AppendEntries failed for s%v, back up nextIndex to %v and retrying",
-						server, rf.nextIndex[server])
+					//rf.logDebug("AppendEntries failed for s%v, back up nextIndex to %v and retrying",
+					//	server, rf.nextIndex[server])
 					rf.mu.Unlock()
 				}
 			}(server, rf.currentTerm)
@@ -147,7 +147,7 @@ func (rf *Raft) advanceLeaderCommitIndex() {
 		}
 	}
 	if rf.commitIndex != newCommitIndex {
-		rf.logDebug("leader commitIndex[%v] %v -> %v", rf.me, rf.commitIndex, newCommitIndex)
+		//rf.logDebug("leader commitIndex[%v] %v -> %v", rf.me, rf.commitIndex, newCommitIndex)
 	}
 	rf.commitIndex = newCommitIndex
 	go rf.applyEntries()

@@ -46,10 +46,11 @@ func (rf *Raft) beginElection() {
 				rf.mu.Unlock()
 				return
 			}
-			defer rf.mu.Unlock()
+			// rf.currentTerm == term
 			//rf.logDebug("sent RequestVote to s%v", server)
-			if reply.Term != rf.currentTerm || rf.state != Candidate {
+			if reply.Term < rf.currentTerm || rf.state != Candidate {
 				//rf.logDebug("received expired vote from term %v, ignoring", reply.Term)
+				rf.mu.Unlock()
 				return
 			}
 			if reply.Term > args.Term {
@@ -60,8 +61,10 @@ func (rf *Raft) beginElection() {
 				rf.votedFor = -1
 				rf.persist()
 				rf.changeState(Follower)
+				rf.mu.Unlock()
 				return
 			}
+			rf.mu.Unlock()
 			voteCh <- reply.VoteGranted
 		}(server, rf.currentTerm)
 	}

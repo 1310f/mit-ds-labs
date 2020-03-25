@@ -9,7 +9,7 @@ import (
 )
 
 // Debugging
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -44,6 +44,13 @@ func (rf *Raft) prependLogTag(level string, format string) string {
 	tag := fmt.Sprintf("[%7s] [s%v] [%4d%v] [%v] ",
 		level, rf.me, rf.currentTerm, shortStateName(rf.state), shortVotedFor(rf.votedFor))
 	return tag + format
+}
+
+// FIXME: delete
+func (rf *Raft) GetTermStateTag() string {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return fmt.Sprintf("[%4d%v]", rf.currentTerm, shortStateName(rf.state))
 }
 
 func stateName(state State) string {
