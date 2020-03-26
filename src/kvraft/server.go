@@ -140,10 +140,7 @@ func (kv *KVServer) applyLoop() {
 			kv.mu.Unlock()
 			return
 		}
-		// FIXME: BLOCKED???
-		//kv.logWarning("--- waiting on applyCh")
 		applyMsg := <-kv.applyCh
-		//kv.logWarning("--- received from applyCh")
 		if applyMsg.CommandValid {
 			kv.mu.Lock()
 			op := applyMsg.Command.(Op)
