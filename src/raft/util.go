@@ -3,6 +3,9 @@ package raft
 import (
 	"fmt"
 	"log"
+	"math/rand"
+	"strconv"
+	"time"
 )
 
 // Debugging
@@ -38,9 +41,16 @@ func (rf *Raft) logDebug(format string, a ...interface{}) {
 }
 
 func (rf *Raft) prependLogTag(level string, format string) string {
-	tag := fmt.Sprintf("[s%v @ %3d%v] [%7s] ",
-		rf.me, rf.currentTerm, shortStateName(rf.state), level)
+	tag := fmt.Sprintf("[%7s] [s%v] [%4d%v] [%v] ",
+		level, rf.me, rf.currentTerm, shortStateName(rf.state), shortVotedFor(rf.votedFor))
 	return tag + format
+}
+
+// FIXME: delete
+func (rf *Raft) GetTermStateTag() string {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return fmt.Sprintf("[%4d%v]", rf.currentTerm, shortStateName(rf.state))
 }
 
 func stateName(state State) string {
@@ -70,5 +80,37 @@ func shortStateName(state State) string {
 		return "L"
 	default:
 		return "?"
+	}
+}
+
+func shortVotedFor(server int) string {
+	if server == -1 {
+		return "X"
+	} else {
+		return strconv.Itoa(server)
+	}
+}
+
+func randomElectionTimeout() time.Duration {
+	sleepTimeInMs := rand.Intn(ElectionTimeoutMsMax-ElectionTimeoutMsMin) + ElectionTimeoutMsMin
+	return time.Duration(sleepTimeInMs) * time.Millisecond
+}
+
+func shortLog(entries []LogEntry, omitFirst bool) []int {
+	if omitFirst {
+		if len(entries) <= 1 {
+			return []int{}
+		}
+		var terms []int
+		for _, entry := range entries[1:] {
+			terms = append(terms, entry.Term)
+		}
+		return terms
+	} else {
+		var terms []int
+		for _, entry := range entries {
+			terms = append(terms, entry.Term)
+		}
+		return terms
 	}
 }
