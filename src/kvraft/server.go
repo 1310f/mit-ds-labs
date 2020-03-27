@@ -4,6 +4,7 @@ import (
 	"../labgob"
 	"../labrpc"
 	"../raft"
+	"bytes"
 	"fmt"
 	"log"
 	"sync"
@@ -65,6 +66,9 @@ type KVServer struct {
 
 	// used to return failures
 	clientLogIndex map[RequestId]int
+
+	// persistence
+	persister *raft.Persister
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -167,6 +171,8 @@ func (kv *KVServer) applyLoop() {
 				kv.lastSeen[clientId] = seqNum
 			}
 
+			kv.startSnapshot(applyMsg.CommandIndex)
+
 			if resultCh, ok := kv.resultCh[op.RequestId]; ok {
 				v := kv.data[op.Key]
 				result := Result{
@@ -216,8 +222,33 @@ func (kv *KVServer) applyLoop() {
 			//	kv.mu.Unlock()
 			//}
 
+		} else {
+			// Snapshot
+			kv.mu.Lock()
+			kv.logDebug("received snapshot up to index %v", applyMsg.CommandIndex)
+			kv.loadSnapshot(applyMsg.Snapshot)
+			kv.mu.Unlock()
+			return
 		}
 	}
+}
+
+func (kv *KVServer) loadSnapshot(data []byte) {
+	if data == nil || len(data) < 1 {
+		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var kvData map[string]string
+	var lastSeen map[ClientId]int
+	if d.Decode(&kvData) != nil || d.Decode(&lastSeen) != nil {
+		kv.logFatal("failed to read persisted state")
+	} else {
+		kv.data = kvData
+		kv.lastSeen = lastSeen
+	}
+	return
 }
 
 //
@@ -265,6 +296,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
+	kv.persister = persister
 	kv.data = make(map[string]string)
 	kv.lastSeen = make(map[ClientId]int)
 	kv.clientLogIndex = make(map[RequestId]int)
@@ -275,6 +307,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.loadSnapshot(kv.persister.ReadSnapshot())
 	go kv.applyLoop()
 
 	return kv

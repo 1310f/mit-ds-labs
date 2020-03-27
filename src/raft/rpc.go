@@ -118,32 +118,42 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	// recognize the leader as legitimate, return to follower state
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.persist()
+		rf.changeState(Follower)
+	}
+	reply.Term = rf.currentTerm
+
 	// reset heartbeat timer
 	rf.lastHeartbeat = time.Now()
 
 	// 2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-	if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if len(rf.log) <= rf.relativeIndex(args.PrevLogIndex) ||
+		rf.log[rf.relativeIndex(args.PrevLogIndex)].Term != args.PrevLogTerm {
 		//rf.logDebug("prev log term mismatch at index %v, rejecting AppendEntries", args.PrevLogIndex)
 		reply.Success = false
 		// from Students' Guide to Raft:
-		if args.PrevLogIndex >= len(rf.log) {
+		if rf.relativeIndex(args.PrevLogIndex) >= len(rf.log) {
 			// If a follower does not have prevLogIndex in its log,
 			// it should return with conflictIndex = len(log) and conflictTerm = None.
-			reply.ConflictTerm = -1
-			reply.ConflictIndex = len(rf.log)
+			reply.ConflictTerm = 0
+			reply.ConflictIndex = rf.lastSnapshotIndex + len(rf.log)
 		} else {
 			// If a follower does have prevLogIndex in its log, but the term does not match,
 			// it should return conflictTerm = log[prevLogIndex].Term,
-			reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+			reply.ConflictTerm = rf.log[rf.relativeIndex(args.PrevLogIndex)].Term
 			// and then search its log for the first index whose entry has term equal to conflictTerm.
 			conflictIndex := 1
-			for conflictIndex <= args.PrevLogIndex {
-				if rf.log[conflictIndex].Term == reply.ConflictTerm {
+			for conflictIndex <= rf.relativeIndex(args.PrevLogIndex) {
+				if rf.log[rf.relativeIndex(args.PrevLogIndex)].Term == reply.ConflictTerm {
 					break
 				}
 				conflictIndex++
 			}
-			reply.ConflictIndex = conflictIndex
+			reply.ConflictIndex = rf.lastSnapshotIndex + conflictIndex
 		}
 		//rf.logDebug("conflictIndex = %v, conflictTerm = %v", reply.ConflictIndex, reply.ConflictTerm)
 		return
@@ -157,14 +167,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for idx, entry := range args.Entries {
 		// TODO: fix indexing after implementing snapshotting
 		logIndex := args.PrevLogIndex + 1 + idx
-		if logIndex >= len(rf.log) {
+		if rf.relativeIndex(logIndex) >= len(rf.log) {
 			// log shorter than what we have to append
 			break
 		}
-		if entry.Term != rf.log[logIndex].Term {
+		if entry.Term != rf.log[rf.relativeIndex(logIndex)].Term {
 			//rf.logDebug("log entry mismatch at index %v", logIndex)
 			//rf.logDebug("removing log entries starting from %v", logIndex)
-			rf.log = rf.log[:logIndex]
+			rf.log = rf.log[:rf.relativeIndex(logIndex)]
 			break
 		}
 	}
@@ -174,11 +184,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// save them to append them later
 	var moreEntries []LogEntry
 	if len(rf.log) > lastNewEntryIndex+1 {
-		moreEntries = rf.log[lastNewEntryIndex+1:]
+		moreEntries = rf.log[rf.relativeIndex(lastNewEntryIndex+1):]
 	}
 
 	// 4. append any new entries not already in the log
-	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.log = append(rf.log[:rf.relativeIndex(args.PrevLogIndex+1)], args.Entries...)
 
 	// append the entries after lastNewEntryIndex
 	rf.log = append(rf.log, moreEntries...)
@@ -199,17 +209,59 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		go rf.applyEntries()
 	}
 
-	// recognize the leader as legitimate, return to follower state
+	rf.logDebug("AppendEntries from s%v successful", args.LeaderId)
+}
+
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Offset            int
+	Data              []byte
+	Done              bool
+}
+
+type InstallSnapShotReply struct {
+	Term int
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapShotReply) {
+	// 1. Reply immediately if term < currentTerm
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
+
 	if rf.currentTerm < args.Term {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.persist()
-	}
-	if rf.state != Follower {
-		//rf.logDebug("receives AppendEntries from s%v, converting to follower for term %v",
-		//	args.LeaderId, args.Term)
 		rf.changeState(Follower)
 	}
+	reply.Term = rf.currentTerm
 
-	rf.logDebug("AppendEntries from s%v successful", args.LeaderId)
+	if args.LastIncludedIndex <= rf.lastSnapshotIndex {
+		// we already discarded entries included in the snapshot
+		return
+	}
+	if args.LastIncludedIndex >= rf.lastLogIndex() {
+		// going to discard entire log
+		// use index 0 as last log item
+		rf.log = make([]LogEntry, 1)
+		rf.log[0].Term = args.LastIncludedTerm
+	} else {
+		// keeping part of the log
+		// the last snapshot item is kept as last log item
+		rf.log = rf.log[rf.relativeIndex(rf.lastSnapshotIndex):]
+	}
+	rf.logDebug("on InstallSnapshot, dropping log up to index %v", args.LastIncludedIndex)
+
+	rf.lastSnapshotIndex = args.LastIncludedIndex
+	rf.lastSnapshotTerm = args.LastIncludedTerm
+	rf.persist()
+	rf.persister.SaveStateAndSnapshot(*rf.encodePersistentStates(), args.Data)
+	return
 }

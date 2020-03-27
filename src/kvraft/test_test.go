@@ -630,6 +630,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	check(cfg, t, ck, "a", "A")
 
 	// a bunch of puts into the majority partition.
+	log.Printf("==== PARTITION ====")
 	cfg.partition([]int{0, 1}, []int{2})
 	{
 		ck1 := cfg.makeClient([]int{0, 1})

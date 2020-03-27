@@ -50,6 +50,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	Snapshot     []byte
 }
 
 //
@@ -92,6 +93,10 @@ type Raft struct {
 
 	// temp state for election timer
 	lastHeartbeat time.Time
+
+	// for log compaction
+	lastSnapshotIndex int
+	lastSnapshotTerm  int
 }
 
 //
@@ -99,7 +104,7 @@ type Raft struct {
 //
 func (rf *Raft) lastLogTerm() int {
 	// expects lock to be held
-	return rf.log[rf.lastLogIndex()].Term
+	return rf.log[len(rf.log)-1].Term
 }
 
 //
@@ -107,7 +112,17 @@ func (rf *Raft) lastLogTerm() int {
 //
 func (rf *Raft) lastLogIndex() int {
 	// expects lock to be held
-	return len(rf.log) - 1
+	return rf.lastSnapshotIndex + len(rf.log) - 1
+}
+
+//
+// returns the relative index of absoluteIndex in log,
+// relativeIndex = absoluteIndex - lastSnapshotIndex
+//
+func (rf *Raft) relativeIndex(absoluteIndex int) int {
+	relative := absoluteIndex - rf.lastSnapshotIndex
+	rf.logDebug("absolute %v = relative %v", absoluteIndex, relative)
+	return relative
 }
 
 // return currentTerm and whether this server
@@ -135,13 +150,18 @@ func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
 
 	// expects lock to be held
+	data := rf.encodePersistentStates()
+	rf.persister.SaveRaftState(*data)
+}
+
+func (rf *Raft) encodePersistentStates() *[]byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	_ = e.Encode(rf.currentTerm)
 	_ = e.Encode(rf.votedFor)
 	_ = e.Encode(rf.log)
 	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	return &data
 }
 
 //
@@ -188,20 +208,17 @@ func (rf *Raft) changeState(newState State) {
 	switch newState {
 	case Follower:
 		if rf.state != newState {
-			//rf.logDebug("starting election timer")
 			go rf.electionTimer()
 		}
 		rf.state = newState
 	case Candidate:
 		// set state in beginElection instead
 		// begin election
-		//rf.logDebug("starting election")
 		go rf.beginElection()
 	case Leader:
 		// set up heartbeat loop
 		if rf.state != newState {
 			rf.initLeaderStates()
-			//rf.logDebug("starting heartbeat timer")
 			go rf.sendAppendEntriesTimer()
 		}
 		rf.state = newState
@@ -211,8 +228,19 @@ func (rf *Raft) changeState(newState State) {
 }
 
 func (rf *Raft) applyEntries() {
-	// expects lock to be held
 	rf.mu.Lock()
+	if rf.lastSnapshotIndex > rf.lastApplied {
+		rf.logWarning("sending snapshot to app")
+		applyMsg := ApplyMsg{
+			CommandValid: false,
+			Command:      "InstallSnapshot",
+			CommandIndex: rf.lastSnapshotIndex,
+			Snapshot:     rf.persister.ReadSnapshot(),
+		}
+		rf.mu.Unlock()
+		rf.applyCh <- applyMsg
+		return
+	}
 	oldLastApplied := rf.lastApplied
 	rf.mu.Unlock()
 	for {
@@ -222,7 +250,7 @@ func (rf *Raft) applyEntries() {
 			break
 		}
 		rf.lastApplied++
-		entry := rf.log[rf.lastApplied]
+		entry := rf.log[rf.relativeIndex(rf.lastApplied)]
 		applyMsg := ApplyMsg{
 			CommandValid: true,
 			Command:      entry.Command,
@@ -256,6 +284,7 @@ func (rf *Raft) applyEntries() {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := rf.lastLogIndex() + 1
 	term := rf.currentTerm
 	isLeader := rf.state == Leader
@@ -276,7 +305,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.logDebug("nextIndex[%v] %v -> %v", rf.me, oldNextIndex, rf.nextIndex[rf.me])
 		rf.advanceLeaderCommitIndex()
 	}
-	rf.mu.Unlock()
 	return index, term, isLeader
 }
 
@@ -326,7 +354,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// persistent
 	rf.currentTerm = 0
 	rf.votedFor = -1
-	rf.log = append(rf.log, LogEntry{})
+	rf.log = make([]LogEntry, 1)
+	rf.lastSnapshotIndex = 0
 
 	// volatile
 	rf.commitIndex = 0

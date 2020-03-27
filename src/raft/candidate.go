@@ -1,6 +1,8 @@
 package raft
 
-import "time"
+import (
+	"time"
+)
 
 func (rf *Raft) beginElection() {
 	rf.mu.Lock()
@@ -76,6 +78,7 @@ func (rf *Raft) beginElection() {
 	rf.mu.Lock()
 	//rf.logDebug("waiting for votes to come in...")
 	rf.mu.Unlock()
+	// TODO: implement with sync.Cond?
 	for {
 		// when all peers have voted, or grant/deny votes have reached 1/2, stop waiting for votes
 		if voteCount == len(rf.peers) ||

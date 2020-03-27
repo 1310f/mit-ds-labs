@@ -42,14 +42,17 @@ func (rf *Raft) sendAppendEntriesTimer() {
 						return
 					}
 					if reply.Term > rf.currentTerm {
-						//rf.logDebug("received AppendEntries reply with higher term %v, "+
-						//	"converting to follower and aborting", reply.Term)
+						rf.logDebug("received AppendEntries reply with higher term %v, "+
+							"converting to follower and aborting", reply.Term)
 						rf.changeState(Follower)
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
 						rf.persist()
 						rf.mu.Unlock()
 						return
+					}
+					if rf.state != Leader {
+						rf.logFatal("NO LONGER LEADER")
 					}
 					if reply.Success {
 						// update nextIndex and matchIndex for follower
@@ -66,20 +69,30 @@ func (rf *Raft) sendAppendEntriesTimer() {
 						rf.mu.Unlock()
 						return
 					}
+
+					// reply.Success == false
+					if reply.ConflictTerm == 0 && reply.ConflictIndex <= rf.lastSnapshotIndex {
+						// follower's log out of date, send InstallSnapshot to help it catch up
+						rf.logDebug("sending InstallSnapshot to s%v", server)
+						go rf.installSnapshotToFollower(server)
+						rf.mu.Unlock()
+						return
+					}
+
 					// from Students' Guide to Raft:
 					// Upon receiving a conflict response, the leader should first search its log for conflictTerm.
 					// if it finds an entry in its log with that term, it should set nextIndex to be the one beyond
 					// the index of the last entry in that term in its log.
 					// if it does not find an entry with that term, it should set nextIndex = conflictIndex.
 					newNextIndex := rf.nextIndex[server]
-					for newNextIndex > 0 {
+					for rf.relativeIndex(newNextIndex) > 0 {
 						nextNextIndex := newNextIndex - 1
 						if nextNextIndex == 0 {
 							// does not find an entry with that term
 							newNextIndex = reply.ConflictIndex
 							break
 						}
-						if rf.log[nextNextIndex].Term == reply.ConflictTerm {
+						if rf.log[rf.relativeIndex(nextNextIndex)].Term == reply.ConflictTerm {
 							// finds an entry with that term
 							break
 						}
@@ -119,10 +132,10 @@ func (rf *Raft) makeAppendEntriesArgs(server int) AppendEntriesArgs {
 		args.PrevLogTerm = lastLogTerm
 		return args
 	}
-	args.Entries = make([]LogEntry, len(rf.log[nextIndex:]))
-	copy(args.Entries, rf.log[nextIndex:])
+	args.Entries = make([]LogEntry, len(rf.log[rf.relativeIndex(nextIndex):]))
+	copy(args.Entries, rf.log[rf.relativeIndex(nextIndex):])
 	args.PrevLogIndex = nextIndex - 1
-	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+	args.PrevLogTerm = rf.log[rf.relativeIndex(args.PrevLogIndex)].Term
 	return args
 }
 
@@ -142,7 +155,7 @@ func (rf *Raft) advanceLeaderCommitIndex() {
 		if matched*2 <= len(rf.peers) {
 			break
 		}
-		if rf.log[i].Term == rf.currentTerm {
+		if rf.log[rf.relativeIndex(i)].Term == rf.currentTerm {
 			newCommitIndex = i
 		}
 	}
