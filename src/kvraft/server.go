@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const Debug = 1
+const Debug = 0
 
 const RaftTimeout = 500 * time.Millisecond
 
@@ -182,7 +182,7 @@ func (kv *KVServer) applyLoop() {
 				//kv.logWarning("POINT B")
 				kv.mu.Lock()
 				//kv.logWarning("POINT C")
-				kv.logDebug("cleaning up other requests at index %v", applyMsg.CommandIndex)
+				kv.logVerbose("cleaning up other requests at index %v", applyMsg.CommandIndex)
 				var reqFailed []RequestId
 				for req, index := range kv.clientLogIndex {
 					if index == applyMsg.CommandIndex && req != op.RequestId {
@@ -206,13 +206,13 @@ func (kv *KVServer) applyLoop() {
 			}
 
 			kv.mu.Lock()
-			kv.logDebug("done processing %v", op.RequestId.String())
+			kv.logVerbose("done processing %v", op.RequestId.String())
 			kv.mu.Unlock()
 		} else {
 			// Snapshot
 			kv.mu.Lock()
-			kv.logDebug("received snapshot up to index %v", applyMsg.CommandIndex)
-			kv.logDebug("log size after InstallSnapshot: %v", kv.persister.RaftStateSize())
+			kv.logVerbose("received snapshot up to index %v", applyMsg.CommandIndex)
+			kv.logVerbose("log size after InstallSnapshot: %v", kv.persister.RaftStateSize())
 			kv.loadSnapshot(applyMsg.Snapshot)
 			kv.mu.Unlock()
 		}

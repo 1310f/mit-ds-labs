@@ -33,6 +33,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	// TODO: use nrand() for clientId, using sequential for debugging
 	ck.clientId = currentClientId
 	currentClientId++
 	ck.leader = mrand.Intn(len(servers))

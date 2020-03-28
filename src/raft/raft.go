@@ -262,7 +262,7 @@ func (rf *Raft) applyEntries() {
 			Snapshot:     rf.persister.ReadSnapshot(),
 		}
 		rf.lastApplied = rf.lastSnapshotIndex
-		rf.logDebug("advanced lastApplied to %v", rf.lastApplied)
+		rf.logVerbose("advanced lastApplied to %v", rf.lastApplied)
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		return
@@ -278,14 +278,11 @@ func (rf *Raft) applyEntries() {
 		}
 		applyQueue = append(applyQueue, applyMsg)
 	}
-	if len(applyQueue) > 0 {
-		rf.logDebug("ready to apply index %v to %v", rf.lastApplied+1, rf.lastApplied+len(applyQueue))
-	}
 	rf.mu.Unlock()
 	for _, msg := range applyQueue {
-		rf.mu.Lock()
-		rf.logDebug("about to apply index %v", msg.CommandIndex)
-		rf.mu.Unlock()
+		//rf.mu.Lock()
+		//rf.logDebug("about to apply index %v", msg.CommandIndex)
+		//rf.mu.Unlock()
 		rf.applyCh <- msg
 		rf.mu.Lock()
 		rf.logDebug("applied index %v", msg.CommandIndex)
@@ -294,7 +291,7 @@ func (rf *Raft) applyEntries() {
 	}
 	rf.mu.Lock()
 	if rf.lastApplied > oldLastApplied {
-		rf.logDebug("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
+		rf.logVerbose("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
 	}
 	rf.mu.Unlock()
 }
