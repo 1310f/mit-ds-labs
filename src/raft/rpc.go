@@ -130,6 +130,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// reset heartbeat timer
 	rf.lastHeartbeat = time.Now()
 
+	//rf.logDebug("args.PrevLogIndex=%v, rf.lastSnapshotIndex=%v, len(rf.log)=%v, rf.lastLogIndex()=%v",
+	//	args.PrevLogIndex, rf.lastSnapshotIndex, len(rf.log), rf.lastLogIndex())
+
+	if args.PrevLogIndex < rf.lastSnapshotIndex {
+		// we already discarded part of the appending entries
+		reply.Success = false
+		reply.ConflictIndex = rf.lastLogIndex() + 1
+		reply.ConflictIndex = 0
+		return
+	}
+
 	// 2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= rf.relativeIndex(args.PrevLogIndex) ||
 		rf.log[rf.relativeIndex(args.PrevLogIndex)].Term != args.PrevLogTerm {
@@ -234,6 +245,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapSho
 		reply.Term = rf.currentTerm
 		return
 	}
+	rf.logDebug("receives InstallSnapshot from s%v", args.LeaderId)
 
 	if rf.currentTerm < args.Term {
 		rf.currentTerm = args.Term
@@ -245,17 +257,22 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapSho
 
 	if args.LastIncludedIndex <= rf.lastSnapshotIndex {
 		// we already discarded entries included in the snapshot
+		rf.logDebug("ignoring InstallSnapshot, we already discarded these entries")
 		return
 	}
 	if args.LastIncludedIndex >= rf.lastLogIndex() {
 		// going to discard entire log
 		// use index 0 as last log item
+		rf.logDebug("lastIncluded %v >= lastLogIndex %v, dropping entire log",
+			args.LastIncludedIndex, rf.lastLogIndex())
 		rf.log = make([]LogEntry, 1)
 		rf.log[0].Term = args.LastIncludedTerm
 	} else {
 		// keeping part of the log
 		// the last snapshot item is kept as last log item
-		rf.log = rf.log[rf.relativeIndex(rf.lastSnapshotIndex):]
+		rf.logDebug("lastIncluded %v < lastLogIndex %v, dropping part of the log before lastIncluded %v",
+			args.LastIncludedIndex, rf.lastLogIndex(), args.LastIncludedIndex)
+		rf.log = rf.log[rf.relativeIndex(args.LastIncludedIndex):]
 	}
 	rf.logDebug("on InstallSnapshot, dropping log up to index %v", args.LastIncludedIndex)
 

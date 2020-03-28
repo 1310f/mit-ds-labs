@@ -14,7 +14,7 @@ import (
 
 const Debug = 1
 
-const RaftTimeout = 1 * time.Second
+const RaftTimeout = 500 * time.Millisecond
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -109,13 +109,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) sendToRaft(op Op) Result {
 	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
-		kv.logDebug("received %v, not leader, rejecting", op.String())
+		kv.logVerbose("received %v, not leader, rejecting", op.String())
 		return Result{
 			Err: ErrWrongLeader,
 		}
 	}
 	kv.mu.Lock()
-	kv.logInfo("received %v, creating result channel", op.String())
+	kv.logDebug("received %v, creating result channel", op.String())
 	kv.resultCh[op.RequestId] = make(chan Result)
 	kv.clientLogIndex[op.RequestId] = index
 	resultCh := kv.resultCh[op.RequestId]
@@ -129,7 +129,7 @@ func (kv *KVServer) sendToRaft(op Op) Result {
 		return result
 	case <-time.After(RaftTimeout):
 		kv.mu.Lock()
-		kv.logWarning("%v timed out, deleting channel", op.RequestId.String())
+		kv.logDebug("%v timed out, deleting channel", op.RequestId.String())
 		delete(kv.resultCh, op.RequestId)
 		kv.mu.Unlock()
 		return Result{Err: ErrTimeout}
@@ -140,7 +140,7 @@ func (kv *KVServer) applyLoop() {
 	for {
 		if kv.killed() {
 			kv.mu.Lock()
-			kv.logInfo("killed")
+			kv.logDebug("killed")
 			kv.mu.Unlock()
 			return
 		}
@@ -148,7 +148,7 @@ func (kv *KVServer) applyLoop() {
 		if applyMsg.CommandValid {
 			kv.mu.Lock()
 			op := applyMsg.Command.(Op)
-			kv.logDebug("%v passed raft", op.RequestId.String())
+			kv.logVerbose("%v passed raft", op.RequestId.String())
 			clientId := op.RequestId.ClientId
 			seqNum := op.RequestId.SeqNum
 			commandId := CommandId{
@@ -156,7 +156,7 @@ func (kv *KVServer) applyLoop() {
 				SeqNum:   seqNum,
 			}
 			if kv.lastSeen[clientId] >= seqNum {
-				kv.logDebug("%v already executed, skipping", commandId.String())
+				kv.logVerbose("%v already executed, skipping", commandId.String())
 			} else {
 				switch op.Method {
 				case "Get":
@@ -167,7 +167,7 @@ func (kv *KVServer) applyLoop() {
 				default:
 					kv.logFatal("trying to apply unknown op: %v", op.Method)
 				}
-				kv.logDebug("%v executed for the first time", commandId.String())
+				kv.logVerbose("%v executed for the first time", commandId.String())
 				kv.lastSeen[clientId] = seqNum
 			}
 
@@ -179,9 +179,8 @@ func (kv *KVServer) applyLoop() {
 					Err:   OK,
 					Value: v,
 				}
-				kv.logDebug("%v done, returning result through channel", op.RequestId.String())
+				kv.logVerbose("%v done, returning result through channel", op.RequestId.String())
 				kv.mu.Unlock()
-				// FIXME: this could block if no one's receiving on the other side
 				resultCh <- result
 			} else {
 				kv.mu.Unlock()
@@ -199,7 +198,7 @@ func (kv *KVServer) applyLoop() {
 			for _, request := range reqFailed {
 				kv.mu.Lock()
 				if resultCh, ok := kv.resultCh[request]; ok {
-					kv.logDebug("%v failed in raft", op.RequestId.String())
+					kv.logVerbose("%v failed in raft", op.RequestId.String())
 					result := Result{
 						Err: ErrWrongLeader,
 					}
@@ -231,24 +230,6 @@ func (kv *KVServer) applyLoop() {
 			return
 		}
 	}
-}
-
-func (kv *KVServer) loadSnapshot(data []byte) {
-	if data == nil || len(data) < 1 {
-		return
-	}
-
-	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
-	var kvData map[string]string
-	var lastSeen map[ClientId]int
-	if d.Decode(&kvData) != nil || d.Decode(&lastSeen) != nil {
-		kv.logFatal("failed to read persisted state")
-	} else {
-		kv.data = kvData
-		kv.lastSeen = lastSeen
-	}
-	return
 }
 
 //
@@ -315,6 +296,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 //region Logging utils
 
+func (kv *KVServer) logVerbose(format string, a ...interface{}) {
+	if Debug > 1 {
+		newFormat := kv.prependLogTag("VERBOSE", format)
+		log.Printf(newFormat, a...)
+	}
+}
+
 func (kv *KVServer) logInfo(format string, a ...interface{}) {
 	newFormat := kv.prependLogTag("INFO", format)
 	log.Printf(newFormat, a...)
@@ -368,3 +356,41 @@ func (op *Op) CommandString() string {
 }
 
 //endregion
+
+func (kv *KVServer) startSnapshot(snapshotIndex int) {
+	kv.logInfo("raftStateSize = %vB", kv.persister.RaftStateSize())
+	if kv.maxraftstate == -1 || kv.persister.RaftStateSize() < kv.maxraftstate {
+		// need not snapshot
+		return
+	}
+	kv.logInfo("starting snapshot up to index %v", snapshotIndex)
+	snapShotData := kv.makeSnapshot()
+	kv.rf.SaveSnapshot(&snapShotData, snapshotIndex)
+}
+
+func (kv *KVServer) makeSnapshot() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	_ = e.Encode(kv.data)
+	_ = e.Encode(kv.lastSeen)
+	data := w.Bytes()
+	return data
+}
+
+func (kv *KVServer) loadSnapshot(data []byte) {
+	if data == nil || len(data) < 1 {
+		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var kvData map[string]string
+	var lastSeen map[ClientId]int
+	if d.Decode(&kvData) != nil || d.Decode(&lastSeen) != nil {
+		kv.logFatal("failed to read persisted state")
+	} else {
+		kv.data = kvData
+		kv.lastSeen = lastSeen
+	}
+	return
+}

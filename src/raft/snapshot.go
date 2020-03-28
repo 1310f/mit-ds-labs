@@ -36,7 +36,7 @@ func (rf *Raft) installSnapshotToFollower(server int) {
 		Done:              true,
 	}
 	reply := InstallSnapShotReply{}
-	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", &args, &reply)
 	if !ok {
 		return
 	}
@@ -46,5 +46,11 @@ func (rf *Raft) installSnapshotToFollower(server int) {
 		rf.votedFor = -1
 		rf.persist()
 		return
+	}
+	if args.LastIncludedIndex > rf.matchIndex[server] {
+		rf.matchIndex[server] = args.LastIncludedIndex
+	}
+	if args.LastIncludedIndex+1 > rf.nextIndex[server] {
+		rf.nextIndex[server] = args.LastIncludedIndex + 1
 	}
 }

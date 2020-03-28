@@ -182,6 +182,9 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 
 	cfg.begin(title)
 
+	sz := cfg.LogSize()
+	log.Printf("log size before: %v", sz)
+
 	ck := cfg.makeClient(cfg.All())
 
 	done_partitioner := int32(0)
@@ -650,6 +653,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 	// now make group that requires participation of
 	// lagging server, so that it has to catch up.
+	log.Printf("==== RE-PARTITION ====")
 	cfg.partition([]int{0, 2}, []int{1})
 	{
 		ck1 := cfg.makeClient([]int{0, 2})
@@ -662,6 +666,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	}
 
 	// now everybody
+	log.Printf("==== HEAL ====")
 	cfg.partition([]int{0, 1, 2}, []int{})
 
 	Put(cfg, ck, "e", "E")

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const ClientRetryTimeout = 50 * time.Millisecond
+const ClientRetryTimeout = 10 * time.Millisecond
 
 var currentClientId ClientId = 0
 
@@ -72,10 +72,10 @@ func (ck *Clerk) Get(key string) string {
 		}
 		switch reply.Err {
 		case OK:
-			ck.logInfo("op%v.%v Get(%v) OK: %v", ck.clientId, args.SeqNum, args.Key, reply.Value)
+			//ck.logInfo("op%v.%v Get(%v) OK: %v", ck.clientId, args.SeqNum, args.Key, reply.Value)
 			return reply.Value
 		case ErrNoKey:
-			ck.logInfo("op%v.%v Get(%v) ErrNoKey", ck.clientId, args.SeqNum, args.Key)
+			//ck.logInfo("op%v.%v Get(%v) ErrNoKey", ck.clientId, args.SeqNum, args.Key)
 			return ""
 		case ErrWrongLeader:
 			fallthrough
@@ -120,13 +120,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		switch reply.Err {
 		case OK:
-			ck.logInfo("op%v.%v %v(%v, %v) OK",
-				ck.clientId, args.SeqNum, args.Op, args.Key, args.Value)
+			//ck.logInfo("op%v.%v %v(%v, %v) OK",
+			//	ck.clientId, args.SeqNum, args.Op, args.Key, args.Value)
 			return
 		case ErrNoKey:
 			// FIXME: (?) should this happen for append?
-			ck.logInfo("op%v.%v %v(%v, %v) ErrNoKey",
-				ck.clientId, args.SeqNum, args.Op, args.Key, args.Value)
+			//ck.logInfo("op%v.%v %v(%v, %v) ErrNoKey",
+			//	ck.clientId, args.SeqNum, args.Op, args.Key, args.Value)
 			return
 		case ErrWrongLeader:
 			fallthrough

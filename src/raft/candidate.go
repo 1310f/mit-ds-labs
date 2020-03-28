@@ -113,10 +113,10 @@ func (rf *Raft) beginElection() {
 
 	rf.mu.Lock()
 	if grantCount*2 > len(rf.peers) {
-		rf.logInfo("elected as leader for term %v", rf.currentTerm)
+		rf.logDebug("elected as leader for term %v", rf.currentTerm)
 		rf.changeState(Leader)
 	} else {
-		rf.logInfo("failed election")
+		rf.logDebug("failed election")
 		rf.changeState(Follower)
 	}
 	rf.mu.Unlock()

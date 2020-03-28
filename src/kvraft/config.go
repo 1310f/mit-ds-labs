@@ -1,6 +1,9 @@
 package kvraft
 
-import "../labrpc"
+import (
+	"../labrpc"
+	"log"
+)
 import "testing"
 import "os"
 
@@ -83,6 +86,7 @@ func (cfg *config) LogSize() int {
 	logsize := 0
 	for i := 0; i < cfg.n; i++ {
 		n := cfg.saved[i].RaftStateSize()
+		log.Printf("s%v log size: %v", i, n)
 		if n > logsize {
 			logsize = n
 		}

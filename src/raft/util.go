@@ -9,13 +9,20 @@ import (
 )
 
 // Debugging
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
 		log.Printf(format, a...)
 	}
 	return
+}
+
+func (rf *Raft) logVerbose(format string, a ...interface{}) {
+	if Debug > 1 {
+		newFormat := rf.prependLogTag("VERBOSE", format)
+		log.Printf(newFormat, a...)
+	}
 }
 
 func (rf *Raft) logInfo(format string, a ...interface{}) {
@@ -41,8 +48,8 @@ func (rf *Raft) logDebug(format string, a ...interface{}) {
 }
 
 func (rf *Raft) prependLogTag(level string, format string) string {
-	tag := fmt.Sprintf("[%7s] [s%v] [%4d%v] [%v] ",
-		level, rf.me, rf.currentTerm, shortStateName(rf.state), shortVotedFor(rf.votedFor))
+	tag := fmt.Sprintf("[%7s] [s%v] [%4d%v] ",
+		level, rf.me, rf.currentTerm, shortStateName(rf.state))
 	return tag + format
 }
 

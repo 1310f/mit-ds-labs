@@ -121,7 +121,7 @@ func (rf *Raft) lastLogIndex() int {
 //
 func (rf *Raft) relativeIndex(absoluteIndex int) int {
 	relative := absoluteIndex - rf.lastSnapshotIndex
-	rf.logDebug("absolute %v = relative %v", absoluteIndex, relative)
+	//rf.logDebug("absolute %v = relative %v", absoluteIndex, relative)
 	return relative
 }
 
@@ -203,7 +203,7 @@ func (rf *Raft) readPersist(data []byte) {
 
 func (rf *Raft) changeState(newState State) {
 	// expects lock to be held
-	rf.logInfo("%v -> %v", stateName(rf.state), stateName(newState))
+	rf.logDebug("%v -> %v", stateName(rf.state), stateName(newState))
 
 	switch newState {
 	case Follower:
@@ -230,7 +230,7 @@ func (rf *Raft) changeState(newState State) {
 func (rf *Raft) applyEntries() {
 	rf.mu.Lock()
 	if rf.lastSnapshotIndex > rf.lastApplied {
-		rf.logWarning("sending snapshot to app")
+		rf.logDebug("sending snapshot to app")
 		applyMsg := ApplyMsg{
 			CommandValid: false,
 			Command:      "InstallSnapshot",
@@ -256,13 +256,13 @@ func (rf *Raft) applyEntries() {
 			Command:      entry.Command,
 			CommandIndex: rf.lastApplied,
 		}
-		rf.logInfo("applying %v: %+v", rf.lastApplied, entry)
+		rf.logVerbose("applying %v: %+v", rf.lastApplied, entry)
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 	}
 	rf.mu.Lock()
 	if rf.lastApplied > oldLastApplied {
-		rf.logDebug("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
+		rf.logVerbose("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
 	}
 	rf.mu.Unlock()
 }
@@ -294,9 +294,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 			Command: command,
 		}
-		rf.logInfo("adding new entry to log at index %v: %+v", index, newEntry)
+		rf.logDebug("adding new entry to log at index %v: %+v", index, newEntry)
 		rf.log = append(rf.log, newEntry)
 		rf.persist()
+		rf.broadcastAppendEntries()
 		oldMatchIndex := rf.matchIndex[rf.me]
 		oldNextIndex := rf.nextIndex[rf.me]
 		rf.matchIndex[rf.me] = index
