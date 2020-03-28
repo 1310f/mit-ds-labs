@@ -109,7 +109,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) sendToRaft(op Op) Result {
 	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
+		kv.mu.Lock()
 		kv.logVerbose("received %v, not leader, rejecting", op.String())
+		kv.mu.Unlock()
 		return Result{
 			Err: ErrWrongLeader,
 		}
@@ -137,13 +139,7 @@ func (kv *KVServer) sendToRaft(op Op) Result {
 }
 
 func (kv *KVServer) applyLoop() {
-	for {
-		if kv.killed() {
-			kv.mu.Lock()
-			kv.logDebug("killed")
-			kv.mu.Unlock()
-			return
-		}
+	for !kv.killed() {
 		applyMsg := <-kv.applyCh
 		if applyMsg.CommandValid {
 			kv.mu.Lock()
@@ -179,55 +175,46 @@ func (kv *KVServer) applyLoop() {
 					Err:   OK,
 					Value: v,
 				}
-				kv.logVerbose("%v done, returning result through channel", op.RequestId.String())
+				kv.logDebug("%v done, returning result through channel", op.RequestId.String())
+				//kv.logWarning("POINT A")
 				kv.mu.Unlock()
 				resultCh <- result
+				//kv.logWarning("POINT B")
+				kv.mu.Lock()
+				//kv.logWarning("POINT C")
+				kv.logDebug("cleaning up other requests at index %v", applyMsg.CommandIndex)
+				var reqFailed []RequestId
+				for req, index := range kv.clientLogIndex {
+					if index == applyMsg.CommandIndex && req != op.RequestId {
+						reqFailed = append(reqFailed, req)
+					}
+				}
+				kv.mu.Unlock()
+				for _, request := range reqFailed {
+					kv.mu.Lock()
+					if resultCh, ok := kv.resultCh[request]; ok {
+						kv.logDebug("%v failed in raft", op.RequestId.String())
+						result := Result{Err: ErrWrongLeader}
+						kv.mu.Unlock()
+						resultCh <- result
+					} else {
+						kv.mu.Unlock()
+					}
+				}
 			} else {
 				kv.mu.Unlock()
 			}
 
 			kv.mu.Lock()
-			var reqFailed []RequestId
-			for req, index := range kv.clientLogIndex {
-				if index == applyMsg.CommandIndex && req != op.RequestId {
-					reqFailed = append(reqFailed, req)
-				}
-			}
+			kv.logDebug("done processing %v", op.RequestId.String())
 			kv.mu.Unlock()
-
-			for _, request := range reqFailed {
-				kv.mu.Lock()
-				if resultCh, ok := kv.resultCh[request]; ok {
-					kv.logVerbose("%v failed in raft", op.RequestId.String())
-					result := Result{
-						Err: ErrWrongLeader,
-					}
-					kv.mu.Unlock()
-					resultCh <- result
-				} else {
-					kv.mu.Unlock()
-				}
-			}
-
-			//if resultCh, ok := kv.resultCh[op.ClientId]; ok {
-			//	v := kv.data[op.Key]
-			//	result := Result{
-			//		Err:   OK,
-			//		Value: v,
-			//	}
-			//	kv.mu.Unlock()
-			//	resultCh <- result
-			//} else {
-			//	kv.mu.Unlock()
-			//}
-
 		} else {
 			// Snapshot
 			kv.mu.Lock()
 			kv.logDebug("received snapshot up to index %v", applyMsg.CommandIndex)
+			kv.logDebug("log size after InstallSnapshot: %v", kv.persister.RaftStateSize())
 			kv.loadSnapshot(applyMsg.Snapshot)
 			kv.mu.Unlock()
-			return
 		}
 	}
 }
@@ -358,14 +345,15 @@ func (op *Op) CommandString() string {
 //endregion
 
 func (kv *KVServer) startSnapshot(snapshotIndex int) {
-	kv.logInfo("raftStateSize = %vB", kv.persister.RaftStateSize())
+	kv.logDebug("raftStateSize = %vB", kv.persister.RaftStateSize())
 	if kv.maxraftstate == -1 || kv.persister.RaftStateSize() < kv.maxraftstate {
 		// need not snapshot
 		return
 	}
-	kv.logInfo("starting snapshot up to index %v", snapshotIndex)
+	kv.logDebug("starting snapshot up to index %v", snapshotIndex)
 	snapShotData := kv.makeSnapshot()
 	kv.rf.SaveSnapshot(&snapShotData, snapshotIndex)
+	kv.logDebug("raftStateSize after snapshot = %vB", kv.persister.RaftStateSize())
 }
 
 func (kv *KVServer) makeSnapshot() []byte {

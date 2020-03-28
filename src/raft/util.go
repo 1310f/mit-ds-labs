@@ -9,7 +9,7 @@ import (
 )
 
 // Debugging
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -120,4 +120,9 @@ func shortLog(entries []LogEntry, omitFirst bool) []int {
 		}
 		return terms
 	}
+}
+
+func (rf *Raft) logString() string {
+	return fmt.Sprintf("(...%v) %v (%v)",
+		rf.lastSnapshotIndex, shortLog(rf.log, true), rf.lastLogIndex())
 }

@@ -97,6 +97,9 @@ type Raft struct {
 	// for log compaction
 	lastSnapshotIndex int
 	lastSnapshotTerm  int
+
+	// apply signal
+	applySignal *sync.Cond
 }
 
 //
@@ -160,6 +163,8 @@ func (rf *Raft) encodePersistentStates() *[]byte {
 	_ = e.Encode(rf.currentTerm)
 	_ = e.Encode(rf.votedFor)
 	_ = e.Encode(rf.log)
+	_ = e.Encode(rf.lastSnapshotIndex)
+	_ = e.Encode(rf.lastSnapshotTerm)
 	data := w.Bytes()
 	return &data
 }
@@ -190,14 +195,24 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log []LogEntry
+	var lastSnapshotIndex int
+	var lastSnapshotTerm int
 	rf.mu.Lock()
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil ||
+		d.Decode(&lastSnapshotIndex) != nil ||
+		d.Decode(&lastSnapshotTerm) != nil {
 		rf.logFatal("failed to read persisted state")
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+		rf.lastSnapshotIndex = lastSnapshotIndex
+		rf.lastSnapshotTerm = lastSnapshotTerm
 	}
+	rf.logInfo("reloaded state: currentTerm=%v, votedFor=%v, log=%v",
+		rf.currentTerm, rf.votedFor, rf.logString())
 	rf.mu.Unlock()
 }
 
@@ -227,6 +242,15 @@ func (rf *Raft) changeState(newState State) {
 	}
 }
 
+func (rf *Raft) applyLoop() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		rf.applySignal.Wait()
+		rf.mu.Unlock()
+		rf.applyEntries()
+	}
+}
+
 func (rf *Raft) applyEntries() {
 	rf.mu.Lock()
 	if rf.lastSnapshotIndex > rf.lastApplied {
@@ -237,32 +261,40 @@ func (rf *Raft) applyEntries() {
 			CommandIndex: rf.lastSnapshotIndex,
 			Snapshot:     rf.persister.ReadSnapshot(),
 		}
+		rf.lastApplied = rf.lastSnapshotIndex
+		rf.logDebug("advanced lastApplied to %v", rf.lastApplied)
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		return
 	}
+
+	var applyQueue []ApplyMsg
 	oldLastApplied := rf.lastApplied
-	rf.mu.Unlock()
-	for {
-		rf.mu.Lock()
-		if rf.lastApplied >= rf.commitIndex {
-			rf.mu.Unlock()
-			break
-		}
-		rf.lastApplied++
-		entry := rf.log[rf.relativeIndex(rf.lastApplied)]
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 		applyMsg := ApplyMsg{
 			CommandValid: true,
-			Command:      entry.Command,
-			CommandIndex: rf.lastApplied,
+			Command:      rf.log[rf.relativeIndex(i)].Command,
+			CommandIndex: i,
 		}
-		rf.logVerbose("applying %v: %+v", rf.lastApplied, entry)
+		applyQueue = append(applyQueue, applyMsg)
+	}
+	if len(applyQueue) > 0 {
+		rf.logDebug("ready to apply index %v to %v", rf.lastApplied+1, rf.lastApplied+len(applyQueue))
+	}
+	rf.mu.Unlock()
+	for _, msg := range applyQueue {
+		rf.mu.Lock()
+		rf.logDebug("about to apply index %v", msg.CommandIndex)
 		rf.mu.Unlock()
-		rf.applyCh <- applyMsg
+		rf.applyCh <- msg
+		rf.mu.Lock()
+		rf.logDebug("applied index %v", msg.CommandIndex)
+		rf.lastApplied = msg.CommandIndex
+		rf.mu.Unlock()
 	}
 	rf.mu.Lock()
 	if rf.lastApplied > oldLastApplied {
-		rf.logVerbose("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
+		rf.logDebug("applied entries %v to %v", oldLastApplied+1, rf.lastApplied)
 	}
 	rf.mu.Unlock()
 }
@@ -296,14 +328,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		rf.logDebug("adding new entry to log at index %v: %+v", index, newEntry)
 		rf.log = append(rf.log, newEntry)
+		rf.logDebug("updated log: %v", rf.logString())
+
 		rf.persist()
 		rf.broadcastAppendEntries()
 		oldMatchIndex := rf.matchIndex[rf.me]
 		oldNextIndex := rf.nextIndex[rf.me]
 		rf.matchIndex[rf.me] = index
 		rf.nextIndex[rf.me]++
-		rf.logDebug("matchIndex[%v] %v -> %v", rf.me, oldMatchIndex, rf.matchIndex[rf.me])
-		rf.logDebug("nextIndex[%v] %v -> %v", rf.me, oldNextIndex, rf.nextIndex[rf.me])
+		rf.logVerbose("matchIndex[%v] %v -> %v", rf.me, oldMatchIndex, rf.matchIndex[rf.me])
+		rf.logVerbose("nextIndex[%v] %v -> %v", rf.me, oldNextIndex, rf.nextIndex[rf.me])
 		rf.advanceLeaderCommitIndex()
 	}
 	return index, term, isLeader
@@ -351,6 +385,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = Init
 	rf.applyCh = applyCh
+	rf.applySignal = sync.NewCond(&rf.mu)
 
 	// persistent
 	rf.currentTerm = 0
@@ -366,6 +401,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// init
+	go rf.applyLoop()
 	rf.mu.Lock()
 	rf.changeState(Follower)
 	rf.mu.Unlock()

@@ -2,6 +2,8 @@ package raft
 
 import "time"
 
+//region RequestVote
+
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -74,6 +76,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 }
 
+//endregion RequestVote
+
+//region AppendEntries
+
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderId     int
@@ -106,14 +112,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
-	//rf.logDebug("receives AppendEntries with term %v from s%v: "+
-	//	"Entries: %v, prevLogIndex: %v, prevLogTerm: %v, LeaderCommit: %v",
-	//	args.Term, args.LeaderId, shortLog(args.Entries, false),
-	//	args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
+	rf.logDebug("receives AppendEntries with term %v from s%v: "+
+		"Entries: (...%v) %v (%v), prevLogIndex: %v, prevLogTerm: %v, LeaderCommit: %v",
+		args.Term, args.LeaderId,
+		args.PrevLogIndex, shortLog(args.Entries, false), args.PrevLogIndex+len(args.Entries),
+		args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
 	// 1. reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
-		//rf.logDebug("rejects expired AppendEntries from s%v", args.LeaderId)
+		rf.logVerbose("rejects expired AppendEntries from s%v", args.LeaderId)
 		reply.Success = false
 		return
 	}
@@ -135,6 +142,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.PrevLogIndex < rf.lastSnapshotIndex {
 		// we already discarded part of the appending entries
+		rf.logVerbose("log entries already discarded")
 		reply.Success = false
 		reply.ConflictIndex = rf.lastLogIndex() + 1
 		reply.ConflictIndex = 0
@@ -144,7 +152,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) <= rf.relativeIndex(args.PrevLogIndex) ||
 		rf.log[rf.relativeIndex(args.PrevLogIndex)].Term != args.PrevLogTerm {
-		//rf.logDebug("prev log term mismatch at index %v, rejecting AppendEntries", args.PrevLogIndex)
+		rf.logVerbose("prev log term mismatch at index %v, rejecting AppendEntries", args.PrevLogIndex)
 		reply.Success = false
 		// from Students' Guide to Raft:
 		if rf.relativeIndex(args.PrevLogIndex) >= len(rf.log) {
@@ -176,15 +184,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 3. if an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
 	for idx, entry := range args.Entries {
-		// TODO: fix indexing after implementing snapshotting
 		logIndex := args.PrevLogIndex + 1 + idx
 		if rf.relativeIndex(logIndex) >= len(rf.log) {
 			// log shorter than what we have to append
 			break
 		}
 		if entry.Term != rf.log[rf.relativeIndex(logIndex)].Term {
-			//rf.logDebug("log entry mismatch at index %v", logIndex)
-			//rf.logDebug("removing log entries starting from %v", logIndex)
+			rf.logVerbose("log entry mismatch at index %v", logIndex)
+			rf.logVerbose("removing log entries starting from %v", logIndex)
 			rf.log = rf.log[:rf.relativeIndex(logIndex)]
 			break
 		}
@@ -194,7 +201,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// there might be things after lastNewEntryIndex already in our log,
 	// save them to append them later
 	var moreEntries []LogEntry
-	if len(rf.log) > lastNewEntryIndex+1 {
+	if rf.lastLogIndex() > lastNewEntryIndex {
 		moreEntries = rf.log[rf.relativeIndex(lastNewEntryIndex+1):]
 	}
 
@@ -206,22 +213,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.persist()
 
-	//rf.logDebug("updated log: %v", shortLog(rf.log, true))
+	rf.logDebug("updated log: %v", rf.logString())
 
 	// 5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
-		//oldCommitIndex := rf.commitIndex
+		oldCommitIndex := rf.commitIndex
 		if args.LeaderCommit < lastNewEntryIndex {
 			rf.commitIndex = args.LeaderCommit
 		} else {
 			rf.commitIndex = lastNewEntryIndex
 		}
-		//rf.logDebug("commitIndex[%v] %v -> %v", rf.me, oldCommitIndex, rf.commitIndex)
-		go rf.applyEntries()
+		rf.logVerbose("commitIndex[%v] %v -> %v", rf.me, oldCommitIndex, rf.commitIndex)
+		rf.applySignal.Broadcast()
 	}
 
 	rf.logDebug("AppendEntries from s%v successful", args.LeaderId)
 }
+
+//endregion
+
+//region InstallSnapshot
 
 type InstallSnapshotArgs struct {
 	Term              int
@@ -278,7 +289,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapSho
 
 	rf.lastSnapshotIndex = args.LastIncludedIndex
 	rf.lastSnapshotTerm = args.LastIncludedTerm
-	rf.persist()
 	rf.persister.SaveStateAndSnapshot(*rf.encodePersistentStates(), args.Data)
 	return
 }
+
+//endregion

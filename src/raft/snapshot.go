@@ -11,11 +11,10 @@ func (rf *Raft) SaveSnapshot(snapshot *[]byte, snapshotIndex int) {
 	}
 
 	// log[0] reserved as last log item
-	rf.logDebug("dropping log before index %v", snapshotIndex)
+	rf.logDebug("dropping log up to index %v", snapshotIndex)
 	rf.log = rf.log[rf.relativeIndex(snapshotIndex):]
 	rf.lastSnapshotIndex = snapshotIndex
 	rf.lastSnapshotTerm = rf.log[0].Term
-	rf.persist()
 
 	// use persister to save both state and snapshot
 	state := rf.encodePersistentStates()
